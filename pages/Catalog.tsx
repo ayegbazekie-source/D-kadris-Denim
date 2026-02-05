@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { storage } from '../services/storage';
 import { Product, Order, Measurements, SiteConfig } from '../types';
@@ -16,9 +15,11 @@ const Catalog: React.FC = () => {
   useEffect(() => {
     setProducts(storage.getProducts());
     setSiteConfig(storage.getSiteConfig());
+
+    // Capture referral code from URL query param and store it
     const params = new URLSearchParams(window.location.hash.split('?')[1]);
     const ref = params.get('ref');
-    if (ref) localStorage.setItem('referrer', ref);
+    if (ref) localStorage.setItem('dkadris_referrer', ref);
   }, []);
 
   const displayProducts = useMemo(() => {
@@ -41,14 +42,14 @@ const Catalog: React.FC = () => {
       return;
     }
 
-    const ref = localStorage.getItem('referrer');
+    const ref = localStorage.getItem('dkadris_referrer'); // Updated key to match Home.tsx
     const measurementsStr = Object.entries(measurements)
       .filter(([_, val]) => val !== '')
       .map(([key, val]) => `${key}: ${val}`)
       .join('\n');
 
     const msg = `Greetings D-Kadris! I'm interested in the following:\n\n*Product:* ${selectedProduct?.name}\n*Style:* ${orderType}\n*Quantity:* ${quantity}\n\n*Measurements:*\n${measurementsStr}${ref ? `\n\n*Referral Code:* ${ref}` : ''}\n\nCan you confirm availability and lead time?`;
-    
+
     window.open(`https://wa.me/2348163914835?text=${encodeURIComponent(msg)}`);
 
     // Log the order internally for admin tracking
@@ -60,7 +61,7 @@ const Catalog: React.FC = () => {
       measurements,
       timestamp: Date.now(),
       customerEmail: 'customer@whatsapp.com',
-      referrerCode: ref || undefined,
+      referrerCode: ref || undefined, // Added referral code tracking
       status: 'pending',
       total: (selectedProduct?.price || 0) * quantity
     };
