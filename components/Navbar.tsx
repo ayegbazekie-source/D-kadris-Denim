@@ -12,18 +12,23 @@ const Navbar: React.FC = () => {
   const isAdminPage = location.pathname.startsWith('/admin');
 
   const isStudioPreview = () => {
-    return window.location.hostname.includes('aistudio.google.com') || 
-           window.location.hostname.includes('localhost') ||
-           window.location.hostname.includes('netlify.app'); // Added netlify for testing
+    return (
+      window.location.hostname.includes('aistudio.google.com') ||
+      window.location.hostname.includes('localhost') ||
+      window.location.hostname.includes('netlify.app') // Added netlify for preview/dev
+    );
   };
 
   useEffect(() => {
     const updateConfig = () => setConfig(storage.getSiteConfig());
     const handleScroll = () => setIsScrolled(window.scrollY > 100);
     
-    // Check session or dev mode
+    // Check session or dev mode, hide admin link on production
     const authed = sessionStorage.getItem('dkadris_admin_auth') === 'true';
-    setShowAdmin(isStudioPreview() || authed);
+    setShowAdmin(
+      (isStudioPreview() || authed) &&
+      !window.location.hostname.includes('your-live-site.netlify.app') // Hide on live site
+    );
 
     window.addEventListener('dkadris_storage_update', updateConfig);
     window.addEventListener('scroll', handleScroll);
