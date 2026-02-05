@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { storage } from '../services/storage';
 import { Product, Order, Affiliate, SiteConfig, FeaturedFit, FeatureToggles } from '../types';
 
@@ -7,17 +7,19 @@ const Admin: React.FC = () => {
   const [isAuth, setIsAuth] = useState(false);
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [showRecoveryInfo, setShowRecoveryInfo] = useState(false);
   const [isSafeMode, setIsSafeMode] = useState(false);
   
   const [products, setProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [affiliates, setAffiliates] = useState<Record<string, Affiliate>>({});
   const [siteConfig, setSiteConfig] = useState<SiteConfig>(storage.getSiteConfig());
-  const [activeTab, setActiveTab] = useState<'products' | 'orders' | 'affiliates' | 'cms'>('products');
+  const [isMaintenance, setIsMaintenance] = useState(storage.getMaintenance());
+  const [activeTab, setActiveTab] = useState<'products' | 'orders' | 'affiliates' | 'cms' | 'system'>('products');
 
-  // Check if we are in a safe mode (bypass auth for testing/netlify deploy if workers unavailable)
-  // This can be triggered by a specific URL param or just default to allowing a bypass button
+  // Modals / Editors
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [isAddingProduct, setIsAddingProduct] = useState(false);
+
   useEffect(() => {
     const checkAuth = () => {
       const session = sessionStorage.getItem('dkadris_admin_auth') === 'true';
@@ -29,32 +31,28 @@ const Admin: React.FC = () => {
 
   useEffect(() => {
     if (isAuth) {
-      setProducts(storage.getProducts());
-      setOrders(storage.getOrders());
-      setAffiliates(storage.getAffiliates());
-      setSiteConfig(storage.getSiteConfig());
+      refreshData();
     }
   }, [isAuth]);
 
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    // Normal auth
-    if (password === 'admin123') {
-      executeLogin();
-    } else {
-      alert("Invalid Access Key");
-    }
-  };
-
-  const handleSafeModeBypass = () => {
-    setIsSafeMode(true);
-    executeLogin();
+  const refreshData = () => {
+    setProducts(storage.getProducts());
+    setOrders(storage.getOrders());
+    setAffiliates(storage.getAffiliates());
+    setSiteConfig(storage.getSiteConfig());
+    setIsMaintenance(storage.getMaintenance());
   };
 
   const executeLogin = () => {
     sessionStorage.setItem('dkadris_admin_auth', 'true');
     setIsAuth(true);
     window.dispatchEvent(new CustomEvent('dkadris_storage_update'));
+  };
+
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password === 'admin123') executeLogin();
+    else alert("Invalid Access Key");
   };
 
   const logout = () => {
@@ -65,106 +63,89 @@ const Admin: React.FC = () => {
     window.dispatchEvent(new CustomEvent('dkadris_storage_update'));
   };
 
+  const toBase64 = (file: File): Promise<string> => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = error => reject(error);
+  });
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>, callback: (base64: string) => void) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      try {
+        const base64 = await toBase64(file);
+        callback(base64);
+      } catch (err) {
+        alert("Image upload failed");
+      }
+    }
+  };
+
+  // Product CRUD
+  const saveProduct = (p: Product) => {
+    const exists = products.find(x => x.id === p.id);
+    let newProducts;
+    if (exists) {
+      newProducts = products.map(x => x.id === p.id ? p : x);
+    } else {
+      newProducts = [...products, p];
+    }
+    storage.setProducts(newProducts);
+    setProducts(newProducts);
+    setEditingProduct(null);
+    setIsAddingProduct(false);
+  };
+
+  const deleteProduct = (id: string) => {
+    if (!confirm("Are you sure you want to delete this product?")) return;
+    const newProducts = products.filter(p => p.id !== id);
+    storage.setProducts(newProducts);
+    setProducts(newProducts);
+  };
+
+  // Site Config
   const saveConfig = () => {
     storage.setSiteConfig(siteConfig);
-    alert("Site configuration published!");
+    storage.setMaintenance(isMaintenance);
+    alert("System configuration published!");
+    window.dispatchEvent(new CustomEvent('dkadris_storage_update'));
   };
 
-  const toggleFeature = (key: keyof FeatureToggles) => {
-    setSiteConfig(prev => ({
-      ...prev,
-      featureToggles: {
-        ...prev.featureToggles,
-        [key]: !prev.featureToggles[key]
-      }
-    }));
+  // Function to move featured fits up or down in the curation list
+  const moveFit = (index: number, direction: 'up' | 'down') => {
+    const newFits = [...siteConfig.featuredFits];
+    const newIndex = direction === 'up' ? index - 1 : index + 1;
+    if (newIndex >= 0 && newIndex < newFits.length) {
+      const temp = newFits[index];
+      newFits[index] = newFits[newIndex];
+      newFits[newIndex] = temp;
+      setSiteConfig({ ...siteConfig, featuredFits: newFits });
+    }
   };
 
-  const toggleWhitelist = (id: string) => {
-    const updatedProducts = products.map(p => 
-      p.id === id ? { ...p, whitelisted: !p.whitelisted } : p
-    );
-    setProducts(updatedProducts);
-    storage.setProducts(updatedProducts);
-  };
-
-  const updateFit = (id: string, updates: Partial<FeaturedFit>) => {
-    setSiteConfig(prev => ({
-      ...prev,
-      featuredFits: prev.featuredFits.map(f => f.id === id ? { ...f, ...updates } : f)
-    }));
-  };
-
-  const moveFit = (idx: number, direction: 'up' | 'down') => {
-    const newList = [...siteConfig.featuredFits];
-    const target = direction === 'up' ? idx - 1 : idx + 1;
-    if (target < 0 || target >= newList.length) return;
-    [newList[idx], newList[target]] = [newList[target], newList[idx]];
-    setSiteConfig(prev => ({ ...prev, featuredFits: newList }));
-  };
-
-  if (isLoading) return <div className="min-h-screen bg-navy flex items-center justify-center text-gold font-bold">Verifying System Status...</div>;
+  if (isLoading) return <div className="min-h-screen bg-navy flex items-center justify-center text-gold font-bold">Initializing System...</div>;
 
   if (!isAuth) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-navy px-4 py-12">
-        <div className="w-full max-w-md bg-cream p-8 md:p-12 rounded-[2.5rem] shadow-2xl text-center border border-navy/5">
-          <h1 className="text-2xl md:text-3xl font-bold mb-2 uppercase tracking-tight font-sans text-navy">Admin Access</h1>
-          <p className="text-navy/40 text-xs mb-8 font-bold uppercase tracking-widest">Secure Entry Point</p>
-          
+      <div className="min-h-screen flex items-center justify-center bg-navy px-4">
+        <div className="w-full max-w-md bg-cream p-10 rounded-[2.5rem] shadow-2xl text-center">
+          <h1 className="text-3xl font-bold mb-6 text-navy font-belina">Admin Console</h1>
           <form onSubmit={handleLogin} className="space-y-6">
-            <div className="relative">
-              <input 
-                type={showPassword ? "text" : "password"}
-                placeholder="System Access Key"
-                className="w-full p-5 pr-14 border-2 border-navy/10 rounded-2xl outline-none focus:border-copper transition-all text-center text-lg bg-white font-bold tracking-widest text-black"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                autoFocus
-              />
-              <button 
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-4 top-1/2 -translate-y-1/2 text-navy/40 hover:text-navy transition-colors"
-              >
-                {showPassword ? (
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18" /></svg>
-                ) : (
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                )}
-              </button>
-            </div>
-            <button type="submit" className="w-full bg-navy text-gold py-5 rounded-2xl font-bold uppercase tracking-widest text-sm shadow-xl hover:bg-copper transition-all active:scale-95">
-              Initialize Dashboard
+            <input 
+              type={showPassword ? "text" : "password"}
+              placeholder="System Access Key"
+              className="w-full p-4 border-2 border-navy/10 rounded-2xl outline-none focus:border-copper transition-all text-center font-bold text-black"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              autoFocus
+            />
+            <button type="submit" className="w-full bg-navy text-gold py-4 rounded-2xl font-bold uppercase tracking-widest shadow-xl hover:bg-copper transition-all">
+              Login
             </button>
-            
-            <div className="pt-4 space-y-4">
-               <button 
-                type="button"
-                onClick={() => setShowRecoveryInfo(!showRecoveryInfo)}
-                className="text-xs font-bold text-navy/40 hover:text-navy uppercase tracking-widest"
-               >
-                 Lost Access Key?
-               </button>
-               {showRecoveryInfo && (
-                 <div className="bg-white/50 p-4 rounded-xl border border-navy/5 animate-fade-in">
-                    <p className="text-[10px] text-copper font-bold italic leading-relaxed">
-                      Administrative access recovery must be requested through our headquarters. 
-                      Standard preview key is active.
-                    </p>
-                 </div>
-               )}
-
-               <div className="pt-8 border-t border-navy/5">
-                  <button 
-                    type="button"
-                    onClick={handleSafeModeBypass}
-                    className="w-full bg-white border-2 border-navy/10 text-navy/40 px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-navy hover:text-gold transition-all"
-                  >
-                    Bypass Auth (Development Mode)
-                  </button>
-               </div>
-            </div>
+            <button type="button" onClick={() => { setIsSafeMode(true); executeLogin(); }} className="text-[10px] font-black text-navy/40 uppercase tracking-widest hover:text-navy">
+              Bypass for Development
+            </button>
           </form>
         </div>
       </div>
@@ -173,231 +154,283 @@ const Admin: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-cream flex flex-col pt-24">
-      {isSafeMode && (
-        <div className="bg-burntOrange text-white text-[10px] font-black py-2 px-6 uppercase tracking-[0.3em] text-center sticky top-0 z-[60]">
-          Auth Disabled – Development Mode
-        </div>
-      )}
-
+      {isSafeMode && <div className="bg-burntOrange text-white text-[10px] font-black py-2 px-6 uppercase tracking-[0.3em] text-center sticky top-0 z-[60]">Auth Disabled – Development Mode</div>}
+      
       <nav className="bg-navy text-gold p-4 md:p-6 flex flex-col md:flex-row justify-between items-center gap-4 border-b border-gold/20 shadow-xl mx-4 md:mx-6 rounded-[2rem]">
-        <h1 className="text-xl md:text-2xl font-bold font-belina tracking-tight">System Command Center</h1>
+        <h1 className="text-xl md:text-2xl font-bold font-belina">D-Kadris Tailor CMS</h1>
         <div className="flex flex-wrap justify-center gap-2">
-          {(['products', 'orders', 'affiliates', 'cms'] as const).map(tab => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`px-4 md:px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === tab ? 'bg-gold text-navy shadow-lg' : 'text-gold/60 hover:text-gold'}`}
-            >
+          {(['products', 'orders', 'affiliates', 'cms', 'system'] as const).map(tab => (
+            <button key={tab} onClick={() => setActiveTab(tab)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === tab ? 'bg-gold text-navy shadow-lg' : 'text-gold/60 hover:text-gold'}`}>
               {tab}
             </button>
           ))}
-          <button onClick={logout} className="ml-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-burntOrange/20 text-burntOrange border border-burntOrange/30 hover:bg-burntOrange hover:text-white transition-all">
-            Exit
-          </button>
+          <button onClick={logout} className="ml-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-burntOrange/20 text-burntOrange border border-burntOrange/30 hover:bg-burntOrange hover:text-white transition-all">Exit</button>
         </div>
       </nav>
 
-      <div className="flex-grow p-4 md:p-6">
-        <div className="max-w-7xl mx-auto pb-20">
-          {activeTab === 'products' && (
-            <div className="space-y-6">
-              <h2 className="text-2xl md:text-3xl font-bold text-navy font-belina px-2">Inventory Management</h2>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                {products.map(product => (
-                  <div key={product.id} className="bg-white p-4 md:p-6 rounded-3xl shadow-xl border border-navy/5 flex gap-4 hover:shadow-2xl transition-shadow">
-                    <img src={product.image} className="w-20 h-28 md:w-24 md:h-32 object-cover rounded-xl shadow-md" alt={product.name} />
-                    <div className="flex-grow">
-                      <h3 className="font-bold text-navy text-sm md:text-base">{product.name}</h3>
-                      <p className="text-[10px] text-navy/40 font-black uppercase tracking-widest">{product.type}</p>
-                      <p className="text-copper font-bold mt-2">₦{product.price.toLocaleString()}</p>
-                      <button 
-                        onClick={() => toggleWhitelist(product.id)}
-                        className={`mt-4 px-4 py-2 rounded-lg text-[8px] md:text-[10px] font-black uppercase tracking-widest border transition-all ${product.whitelisted ? 'bg-green-50 text-green-600 border-green-200' : 'bg-red-50 text-red-600 border-red-200'}`}
-                      >
-                        {product.whitelisted ? 'Public' : 'Hidden'}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
+      <div className="flex-grow p-4 md:p-8 max-w-7xl mx-auto w-full pb-32">
+        {activeTab === 'products' && (
+          <div className="space-y-8">
+            <div className="flex justify-between items-center">
+              <h2 className="text-3xl font-bold text-navy font-belina">Inventory Manager</h2>
+              <button onClick={() => setIsAddingProduct(true)} className="bg-navy text-gold px-6 py-3 rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg hover:bg-copper transition-all">+ Add Product</button>
             </div>
-          )}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              {products.map(p => (
+                <div key={p.id} className="bg-white p-6 rounded-[2rem] shadow-xl border border-navy/5 relative group">
+                  <div className="aspect-[3/4] rounded-2xl overflow-hidden mb-4 bg-cream">
+                    <img src={p.image} className="w-full h-full object-cover" alt={p.name} />
+                  </div>
+                  <h3 className="font-bold text-navy text-lg">{p.name}</h3>
+                  <p className="text-[10px] text-navy/40 font-black uppercase tracking-widest mb-2">{p.type} • {p.category}</p>
+                  <p className="text-copper font-black">₦{p.price.toLocaleString()}</p>
+                  <div className="mt-4 flex gap-2">
+                    <button onClick={() => setEditingProduct(p)} className="flex-1 bg-navy/5 text-navy py-2 rounded-lg font-bold text-[10px] uppercase tracking-widest hover:bg-navy hover:text-white transition-all">Edit</button>
+                    <button onClick={() => deleteProduct(p.id)} className="flex-1 bg-red-50 text-red-600 py-2 rounded-lg font-bold text-[10px] uppercase tracking-widest hover:bg-red-600 hover:text-white transition-all">Delete</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
-          {activeTab === 'orders' && (
-            <div className="bg-white rounded-[2rem] md:rounded-[2.5rem] shadow-xl overflow-hidden p-6 md:p-8 border border-navy/5">
-              <h2 className="text-2xl md:text-3xl font-bold text-navy font-belina mb-8">Workshop Ledger</h2>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left min-w-[600px]">
-                  <thead>
-                    <tr className="border-b-2 border-cream text-navy/40 uppercase text-[10px] font-black tracking-widest">
-                      <th className="py-4 px-2">Order ID</th>
-                      <th className="py-4 px-2">Product</th>
-                      <th className="py-4 px-2">Total</th>
-                      <th className="py-4 px-2">Status</th>
-                      <th className="py-4 px-2">Date</th>
+        {activeTab === 'orders' && (
+          <div className="bg-white rounded-[2.5rem] p-8 shadow-xl border border-navy/5 overflow-hidden">
+            <h2 className="text-3xl font-bold text-navy font-belina mb-8">Workshop Registry</h2>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="border-b-2 border-cream text-navy/40 uppercase text-[10px] font-black tracking-widest">
+                    <th className="py-4">Order ID</th>
+                    <th className="py-4">Product</th>
+                    <th className="py-4">Customer</th>
+                    <th className="py-4">Amount</th>
+                    <th className="py-4">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="text-sm">
+                  {orders.map(o => (
+                    <tr key={o.id} className="border-b border-cream">
+                      <td className="py-4 font-mono text-xs">{o.id}</td>
+                      <td className="py-4 font-bold">{o.productName}</td>
+                      <td className="py-4">{o.customerEmail}</td>
+                      <td className="py-4 font-black text-copper">₦{o.total.toLocaleString()}</td>
+                      <td className="py-4">
+                        <select 
+                          className={`px-2 py-1 rounded-lg font-black uppercase text-[8px] tracking-widest outline-none ${o.status === 'delivered' ? 'bg-green-100 text-green-700' : 'bg-gold/20 text-burntOrange'}`}
+                          value={o.status}
+                          onChange={(e) => {
+                            const newOrders = orders.map(x => x.id === o.id ? { ...x, status: e.target.value as any } : x);
+                            storage.setOrders(newOrders);
+                            setOrders(newOrders);
+                          }}
+                        >
+                          <option value="pending">Pending</option>
+                          <option value="paid">Paid</option>
+                          <option value="delivered">Delivered</option>
+                        </select>
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {orders.length === 0 ? (
-                      <tr><td colSpan={5} className="py-12 text-center text-navy/30 italic">No workshop logs found.</td></tr>
-                    ) : orders.map(order => (
-                      <tr key={order.id} className="border-b border-cream hover:bg-cream/20 transition-colors">
-                        <td className="py-4 px-2 font-mono text-[10px] text-navy/60">{order.id}</td>
-                        <td className="py-4 px-2 font-bold text-navy text-sm">{order.productName}</td>
-                        <td className="py-4 px-2 font-black text-copper text-sm">₦{order.total.toLocaleString()}</td>
-                        <td className="py-4 px-2">
-                          <span className={`px-3 py-1 rounded-full text-[8px] font-black uppercase tracking-widest ${order.status === 'pending' ? 'bg-gold/20 text-burntOrange' : 'bg-green-100 text-green-700'}`}>
-                            {order.status}
-                          </span>
-                        </td>
-                        <td className="py-4 px-2 text-[10px] text-navy/40 font-bold uppercase">{new Date(order.timestamp).toLocaleDateString()}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'affiliates' && (
+          <div className="space-y-6">
+            <h2 className="text-3xl font-bold text-navy font-belina">Partner Registry</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {Object.values(affiliates).map((a: Affiliate) => (
+                <div key={a.email} className="bg-white p-8 rounded-[2rem] shadow-xl border border-navy/5 flex flex-col">
+                  <div className="flex justify-between items-start mb-4">
+                    <div>
+                      <h3 className="text-xl font-bold text-navy">{a.name}</h3>
+                      <p className="text-xs text-navy/40 font-medium">{a.email}</p>
+                    </div>
+                    <span className="bg-navy text-gold px-4 py-1 rounded-full text-[10px] font-black tracking-widest uppercase">{a.code}</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-4 text-center mt-auto border-t border-cream pt-6">
+                    <div><p className="text-[8px] font-black text-navy/30 uppercase tracking-widest mb-1">Orders</p><span className="font-bold text-navy">{a.orders.length}</span></div>
+                    <div><p className="text-[8px] font-black text-navy/30 uppercase tracking-widest mb-1">Network</p><span className="font-bold text-navy">{a.referredAffiliates.length}</span></div>
+                    <div><p className="text-[8px] font-black text-navy/30 uppercase tracking-widest mb-1">Earnings</p><span className="font-bold text-copper">₦{a.commission.toLocaleString()}</span></div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'cms' && (
+          <div className="space-y-8">
+            <div className="bg-white p-8 rounded-[2.5rem] shadow-xl border border-navy/5">
+              <div className="flex justify-between items-center mb-8">
+                <h2 className="text-3xl font-bold text-navy font-belina">Site Appearance</h2>
+                <button onClick={saveConfig} className="bg-copper text-white px-8 py-3 rounded-xl font-bold text-xs uppercase tracking-widest shadow-xl hover:bg-burntOrange transition-all">Publish Live</button>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
+                <div className="space-y-6">
+                  <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-navy/40 border-b pb-2">Branding & Logo</h3>
+                  <div className="flex gap-4 mb-4">
+                    <button onClick={() => setSiteConfig({...siteConfig, logoType: 'text'})} className={`flex-1 py-3 rounded-xl font-bold text-xs uppercase tracking-widest border-2 transition-all ${siteConfig.logoType === 'text' ? 'border-navy bg-navy text-gold' : 'border-cream text-navy/40'}`}>Text Only</button>
+                    <button onClick={() => setSiteConfig({...siteConfig, logoType: 'image'})} className={`flex-1 py-3 rounded-xl font-bold text-xs uppercase tracking-widest border-2 transition-all ${siteConfig.logoType === 'image' ? 'border-navy bg-navy text-gold' : 'border-cream text-navy/40'}`}>Image/Logo</button>
+                  </div>
+                  {siteConfig.logoType === 'text' ? (
+                    <input type="text" className="w-full p-4 bg-cream/30 border rounded-2xl font-bold text-navy" value={siteConfig.logoText} onChange={e => setSiteConfig({...siteConfig, logoText: e.target.value})} />
+                  ) : (
+                    <div className="space-y-4">
+                      {siteConfig.logoImage && <img src={siteConfig.logoImage} className="h-16 w-auto mx-auto border-2 border-cream p-2 rounded-xl bg-white" />}
+                      <input type="file" accept="image/*" onChange={e => handleImageUpload(e, base64 => setSiteConfig({...siteConfig, logoImage: base64}))} className="w-full text-xs font-bold text-navy/40" />
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-6">
+                  <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-navy/40 border-b pb-2">Hero Visuals</h3>
+                  <div className="flex gap-4 mb-4">
+                    <button onClick={() => setSiteConfig({...siteConfig, heroBgType: 'url'})} className={`flex-1 py-3 rounded-xl font-bold text-xs uppercase tracking-widest border-2 transition-all ${siteConfig.heroBgType === 'url' ? 'border-navy bg-navy text-gold' : 'border-cream text-navy/40'}`}>Static URL</button>
+                    <button onClick={() => setSiteConfig({...siteConfig, heroBgType: 'upload'})} className={`flex-1 py-3 rounded-xl font-bold text-xs uppercase tracking-widest border-2 transition-all ${siteConfig.heroBgType === 'upload' ? 'border-navy bg-navy text-gold' : 'border-cream text-navy/40'}`}>File Upload</button>
+                  </div>
+                  {siteConfig.heroBgType === 'url' ? (
+                    <input type="text" className="w-full p-4 bg-cream/30 border rounded-2xl font-bold text-navy" value={siteConfig.heroBgUrl} onChange={e => setSiteConfig({...siteConfig, heroBgUrl: e.target.value})} />
+                  ) : (
+                    <div className="space-y-4">
+                      {siteConfig.heroBgUpload && <img src={siteConfig.heroBgUpload} className="h-24 w-full object-cover rounded-xl border-2 border-cream shadow-sm" />}
+                      <input type="file" accept="image/*" onChange={e => handleImageUpload(e, base64 => setSiteConfig({...siteConfig, heroBgUpload: base64}))} className="w-full text-xs font-bold text-navy/40" />
+                    </div>
+                  )}
+                </div>
+
+                <div className="lg:col-span-2 space-y-6">
+                  <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-navy/40 border-b pb-2">Marketing Content</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div><label className="text-[10px] font-black text-navy/40 uppercase mb-2 block">Hero Main Title</label><textarea className="w-full p-4 bg-cream/30 border rounded-2xl font-bold text-navy" rows={3} value={siteConfig.heroTitle} onChange={e => setSiteConfig({...siteConfig, heroTitle: e.target.value})} /></div>
+                    <div><label className="text-[10px] font-black text-navy/40 uppercase mb-2 block">Hero Subheadline</label><textarea className="w-full p-4 bg-cream/30 border rounded-2xl font-bold text-navy" rows={3} value={siteConfig.heroSubtitle} onChange={e => setSiteConfig({...siteConfig, heroSubtitle: e.target.value})} /></div>
+                  </div>
+                </div>
               </div>
             </div>
-          )}
 
-          {activeTab === 'affiliates' && (
-            <div className="bg-white rounded-[2rem] md:rounded-[2.5rem] shadow-xl overflow-hidden p-6 md:p-8 border border-navy/5">
-              <h2 className="text-2xl md:text-3xl font-bold text-navy font-belina mb-8">Partner Registry</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {Object.values(affiliates).map((affiliate: Affiliate) => (
-                  <div key={affiliate.email} className="p-6 border-2 border-cream rounded-3xl hover:border-gold transition-colors bg-white shadow-sm">
-                    <div className="flex justify-between items-start mb-4">
-                      <div>
-                        <h3 className="font-bold text-navy text-base md:text-lg">{affiliate.name}</h3>
-                        <p className="text-[10px] md:text-xs text-navy/40">{affiliate.email}</p>
-                      </div>
-                      <span className="bg-navy text-gold px-3 py-1 rounded-lg text-[8px] md:text-[10px] font-black uppercase tracking-widest shadow-md">{affiliate.code}</span>
+            <div className="bg-white p-8 rounded-[2.5rem] shadow-xl border border-navy/5">
+              <h2 className="text-3xl font-bold text-navy font-belina mb-8">Signature Gallery Curation</h2>
+              <div className="space-y-4">
+                {siteConfig.featuredFits.map((fit, idx) => (
+                  <div key={fit.id} className="flex flex-col md:flex-row gap-6 p-6 border-2 border-cream rounded-3xl bg-cream/10 hover:border-gold/30 transition-all">
+                    <div className="w-32 h-32 rounded-2xl overflow-hidden shadow-lg flex-shrink-0">
+                      <img src={fit.image} className="w-full h-full object-cover" />
                     </div>
-                    <div className="grid grid-cols-2 gap-4 text-center">
-                      <div className="bg-cream/50 p-3 rounded-2xl border border-navy/5">
-                        <p className="text-[8px] font-black text-navy/40 uppercase mb-1 tracking-widest">Network Size</p>
-                        <span className="font-bold text-navy text-lg md:text-xl">{affiliate.referredAffiliates.length}</span>
-                      </div>
-                      <div className="bg-cream/50 p-3 rounded-2xl border border-navy/5">
-                        <p className="text-[8px] font-black text-navy/40 uppercase mb-1 tracking-widest">Commission</p>
-                        <span className="font-bold text-copper text-lg md:text-xl">10%</span>
-                      </div>
+                    <div className="flex-grow grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <input className="p-3 border rounded-xl text-xs font-bold" value={fit.title} onChange={e => {
+                        const newFits = [...siteConfig.featuredFits];
+                        newFits[idx].title = e.target.value;
+                        setSiteConfig({...siteConfig, featuredFits: newFits});
+                      }} />
+                      <select className="p-3 border rounded-xl text-xs font-bold" value={fit.layoutType} onChange={e => {
+                        const newFits = [...siteConfig.featuredFits];
+                        newFits[idx].layoutType = e.target.value as any;
+                        setSiteConfig({...siteConfig, featuredFits: newFits});
+                      }}>
+                        <option value="standard">Standard</option>
+                        <option value="bold">Bold (2x2)</option>
+                        <option value="wide">Wide (2x1)</option>
+                        <option value="tall">Tall (1x2)</option>
+                      </select>
+                      <textarea className="p-3 border rounded-xl text-xs font-bold md:col-span-2" value={fit.description} onChange={e => {
+                        const newFits = [...siteConfig.featuredFits];
+                        newFits[idx].description = e.target.value;
+                        setSiteConfig({...siteConfig, featuredFits: newFits});
+                      }} />
+                    </div>
+                    <div className="flex flex-row md:flex-col justify-center items-center gap-2">
+                      <button onClick={() => moveFit(idx, 'up')} className="p-3 bg-white rounded-xl shadow-sm border border-navy/5">↑</button>
+                      <button onClick={() => moveFit(idx, 'down')} className="p-3 bg-white rounded-xl shadow-sm border border-navy/5">↓</button>
                     </div>
                   </div>
                 ))}
-                {Object.values(affiliates).length === 0 && (
-                   <p className="col-span-full py-20 text-center text-navy/30 italic">No partners registered in system.</p>
-                )}
               </div>
             </div>
-          )}
+          </div>
+        )}
 
-          {activeTab === 'cms' && (
-             <div className="space-y-8">
-                <div className="bg-white p-6 md:p-8 rounded-[2rem] md:rounded-[2.5rem] shadow-xl border border-navy/5">
-                  <div className="flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
-                    <h2 className="text-2xl md:text-3xl font-bold text-navy font-belina">Live CMS Editor</h2>
-                    <button onClick={saveConfig} className="w-full md:w-auto bg-navy text-gold px-10 py-4 rounded-2xl font-bold uppercase tracking-widest text-xs shadow-xl hover:bg-copper transition-all active:scale-95">
-                      Publish Site Changes
-                    </button>
-                  </div>
+        {activeTab === 'system' && (
+          <div className="max-w-xl mx-auto space-y-8">
+            <div className="bg-white p-10 rounded-[3rem] shadow-2xl border border-navy/5 text-center">
+              <h2 className="text-3xl font-bold text-navy font-belina mb-4">System Master Switch</h2>
+              <p className="text-navy/40 text-sm mb-10 leading-relaxed uppercase tracking-widest font-black">Control global accessibility of the store and all public endpoints.</p>
+              
+              <div className="flex items-center justify-center gap-6 mb-12">
+                <span className={`text-xs font-black uppercase tracking-[0.2em] ${!isMaintenance ? 'text-green-600' : 'text-navy/20'}`}>Live</span>
+                <button onClick={() => setIsMaintenance(!isMaintenance)} className={`w-20 h-10 rounded-full relative transition-all duration-500 shadow-inner ${isMaintenance ? 'bg-burntOrange' : 'bg-green-500'}`}>
+                  <div className={`absolute top-1 w-8 h-8 bg-white rounded-full transition-all duration-500 shadow-lg ${isMaintenance ? 'left-11' : 'left-1'}`}></div>
+                </button>
+                <span className={`text-xs font-black uppercase tracking-[0.2em] ${isMaintenance ? 'text-burntOrange' : 'text-navy/20'}`}>Maintenance</span>
+              </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                    <div className="space-y-6">
-                      <h3 className="text-[10px] font-black uppercase tracking-widest text-navy/40 border-b pb-2">Hero Experience</h3>
-                      <div>
-                        <label className="block text-xs font-bold text-navy mb-2 uppercase tracking-widest">Main Headline</label>
-                        <textarea 
-                          className="w-full p-4 border-2 border-cream rounded-2xl text-sm font-medium bg-cream/20 focus:border-gold outline-none transition-colors"
-                          rows={3}
-                          value={siteConfig.heroTitle}
-                          onChange={e => setSiteConfig({...siteConfig, heroTitle: e.target.value})}
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-bold text-navy mb-2 uppercase tracking-widest">Subheadline</label>
-                        <input 
-                          type="text"
-                          className="w-full p-4 border-2 border-cream rounded-2xl text-sm font-medium bg-cream/20 focus:border-gold outline-none transition-colors"
-                          value={siteConfig.heroSubtitle}
-                          onChange={e => setSiteConfig({...siteConfig, heroSubtitle: e.target.value})}
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-bold text-navy mb-2 uppercase tracking-widest">Logo Display Text</label>
-                        <input 
-                          type="text"
-                          className="w-full p-4 border-2 border-cream rounded-2xl text-sm font-medium bg-cream/20 focus:border-gold outline-none transition-colors"
-                          value={siteConfig.logoText}
-                          onChange={e => setSiteConfig({...siteConfig, logoText: e.target.value})}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="space-y-6">
-                      <h3 className="text-[10px] font-black uppercase tracking-widest text-navy/40 border-b pb-2">Feature Toggles</h3>
-                      <div className="grid grid-cols-1 gap-3">
-                        {Object.entries(siteConfig.featureToggles).map(([key, value]) => (
-                          <button 
-                            key={key}
-                            onClick={() => toggleFeature(key as keyof FeatureToggles)}
-                            className={`flex justify-between items-center p-4 rounded-2xl border-2 transition-all ${value ? 'bg-gold/10 border-gold/30 text-navy' : 'bg-white border-cream text-navy/40'}`}
-                          >
-                            <span className="text-[10px] font-bold uppercase tracking-widest">{key.replace(/([A-Z])/g, ' $1')}</span>
-                            <div className={`w-10 h-6 rounded-full relative transition-colors ${value ? 'bg-gold' : 'bg-navy/10'}`}>
-                              <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${value ? 'right-1' : 'left-1'}`}></div>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="bg-white p-6 md:p-8 rounded-[2rem] md:rounded-[2.5rem] shadow-xl border border-navy/5">
-                  <h3 className="text-2xl font-bold text-navy font-belina mb-8">Homepage Gallery Curation</h3>
-                  <div className="space-y-4">
-                    {siteConfig.featuredFits.map((fit, idx) => (
-                      <div key={fit.id} className="flex flex-col md:flex-row gap-6 p-4 md:p-6 border-2 border-cream rounded-3xl bg-cream/10 hover:border-gold/30 transition-colors">
-                        <div className="w-full md:w-32 aspect-square rounded-2xl overflow-hidden shadow-md border-2 border-white flex-shrink-0">
-                          <img src={fit.image} className="w-full h-full object-cover" alt={fit.title} />
-                        </div>
-               <div className="flex-grow grid grid-cols-1 md:grid-cols-2 gap-4">
-                          <input 
-                            className="p-3 border rounded-xl text-xs font-bold bg-white focus:border-gold outline-none"
-                            value={fit.title}
-                            placeholder="Display Title"
-                            onChange={e => updateFit(fit.id, { title: e.target.value })}
-                          />
-                          <select 
-                            className="p-3 border rounded-xl text-xs font-bold bg-white focus:border-gold outline-none"
-                            value={fit.layoutType}
-                            onChange={e => updateFit(fit.id, { layoutType: e.target.value as any })}
-                          >
-                            <option value="standard">Standard Card</option>
-                            <option value="bold">Hero Bold (Large)</option>
-                            <option value="wide">Panoramic Wide</option>
-                            <option value="tall">Portrait Tall</option>
-                          </select>
-                          <textarea 
-                            className="p-3 border rounded-xl text-xs font-bold md:col-span-2 bg-white focus:border-gold outline-none"
-                            rows={2}
-                            value={fit.description}
-                            placeholder="Hover Description"
-                            onChange={e => updateFit(fit.id, { description: e.target.value })}
-                          />
-                        </div>
-                        <div className="flex flex-row md:flex-col gap-2 justify-center items-center px-4">
-                          <button onClick={() => moveFit(idx, 'up')} className="p-3 bg-white hover:bg-gold/20 rounded-lg text-navy shadow-sm border border-navy/5 transition-all">↑</button>
-                          <button onClick={() => moveFit(idx, 'down')} className="p-3 bg-white hover:bg-gold/20 rounded-lg text-navy shadow-sm border border-navy/5 transition-all">↓</button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-             </div>
-          )}
-        </div>
+              <button onClick={saveConfig} className="w-full bg-navy text-gold py-5 rounded-2xl font-bold uppercase tracking-widest text-sm shadow-xl hover:bg-copper transition-all active:scale-95">Update Global State</button>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Product Editor Modal */}
+      {(editingProduct || isAddingProduct) && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-navy/95 backdrop-blur-md">
+          <div className="bg-cream w-full max-w-2xl rounded-[3rem] p-10 max-h-[90vh] overflow-y-auto shadow-2xl relative border-4 border-gold/10">
+            <button onClick={() => { setEditingProduct(null); setIsAddingProduct(false); }} className="absolute top-8 right-8 text-navy/40 hover:text-navy transition-colors">
+              <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+            <h2 className="text-3xl font-bold text-navy font-belina mb-8">{isAddingProduct ? 'Create New Design' : 'Refine Product'}</h2>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div className="space-y-6">
+                <div className="aspect-[3/4] bg-white rounded-[2rem] border-4 border-white shadow-xl overflow-hidden relative">
+                  <img src={(editingProduct?.image) || 'https://images.unsplash.com/photo-1542272604-787c3835535d?q=80&w=2000&auto=format&fit=crop'} className="w-full h-full object-cover" />
+                  <label className="absolute inset-0 bg-navy/40 opacity-0 hover:opacity-100 flex items-center justify-center transition-opacity cursor-pointer text-gold font-bold uppercase tracking-widest text-xs">
+                    Change Photo
+                    <input type="file" className="hidden" accept="image/*" onChange={e => handleImageUpload(e, base64 => {
+                      if (isAddingProduct) setEditingProduct(prev => ({ ...(prev || {}), image: base64 } as any));
+                      else setEditingProduct({ ...editingProduct!, image: base64 });
+                    })} />
+                  </label>
+                </div>
+              </div>
+              
+              <div className="space-y-6">
+                <div>
+                  <label className="text-[10px] font-black text-navy/40 uppercase tracking-widest mb-1 block">Internal Code</label>
+                  <input readOnly={!isAddingProduct} className="w-full p-4 bg-white border-none rounded-2xl font-bold text-navy" value={editingProduct?.id || `dk-${Math.random().toString(36).substr(2, 5)}`} onChange={e => setEditingProduct({...(editingProduct || {}), id: e.target.value} as any)} />
+                </div>
+                <div>
+                  <label className="text-[10px] font-black text-navy/40 uppercase tracking-widest mb-1 block">Full Product Name</label>
+                  <input className="w-full p-4 bg-white border-none rounded-2xl font-bold text-navy" value={editingProduct?.name || ''} onChange={e => setEditingProduct({...(editingProduct || {}), name: e.target.value} as any)} />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[10px] font-black text-navy/40 uppercase tracking-widest mb-1 block">Price (₦)</label>
+                    <input type="number" className="w-full p-4 bg-white border-none rounded-2xl font-bold text-navy" value={editingProduct?.price || 0} onChange={e => setEditingProduct({...(editingProduct || {}), price: Number(e.target.value)} as any)} />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black text-navy/40 uppercase tracking-widest mb-1 block">Market Section</label>
+                    <select className="w-full p-4 bg-white border-none rounded-2xl font-bold text-navy" value={editingProduct?.category || 'men'} onChange={e => setEditingProduct({...(editingProduct || {}), category: e.target.value as any} as any)}>
+                      <option value="men">Men</option>
+                      <option value="women">Women</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[10px] font-black text-navy/40 uppercase tracking-widest mb-1 block">Garment Type</label>
+                  <select className="w-full p-4 bg-white border-none rounded-2xl font-bold text-navy" value={editingProduct?.type || 'trouser'} onChange={e => setEditingProduct({...(editingProduct || {}), type: e.target.value} as any)}>
+                    {['jacket', 'shirt', 'trouser', 'shorts', 'skirt'].map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <button onClick={() => saveProduct(editingProduct as Product)} className="w-full bg-navy text-gold py-5 rounded-2xl font-bold uppercase tracking-widest text-sm shadow-xl hover:bg-copper transition-all mt-6">Confirm Product Registry</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
