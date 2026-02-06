@@ -15,11 +15,9 @@ const Catalog: React.FC = () => {
   useEffect(() => {
     setProducts(storage.getProducts());
     setSiteConfig(storage.getSiteConfig());
-
-    // Capture referral code from URL query param and store it
     const params = new URLSearchParams(window.location.hash.split('?')[1]);
     const ref = params.get('ref');
-    if (ref) localStorage.setItem('dkadris_referrer', ref);
+    if (ref) localStorage.setItem('referrer', ref);
   }, []);
 
   const displayProducts = useMemo(() => {
@@ -42,17 +40,23 @@ const Catalog: React.FC = () => {
       return;
     }
 
-    const ref = localStorage.getItem('dkadris_referrer'); // Updated key to match Home.tsx
+    const ref = localStorage.getItem('referrer');
     const measurementsStr = Object.entries(measurements)
       .filter(([_, val]) => val !== '')
       .map(([key, val]) => `${key}: ${val}`)
       .join('\n');
 
     const msg = `Greetings D-Kadris! I'm interested in the following:\n\n*Product:* ${selectedProduct?.name}\n*Style:* ${orderType}\n*Quantity:* ${quantity}\n\n*Measurements:*\n${measurementsStr}${ref ? `\n\n*Referral Code:* ${ref}` : ''}\n\nCan you confirm availability and lead time?`;
-
+    
     window.open(`https://wa.me/2348163914835?text=${encodeURIComponent(msg)}`);
 
-    // Log the order internally for admin tracking
+    // Log order for admin & affiliate tracking
+    const currentOrders = storage.getOrders();
+    const isFirstPurchase = ref && !currentOrders.some(o => o.referrerCode === ref);
+    const affiliateEarning = ref 
+      ? ((isFirstPurchase ? 0.1 : 0.05) * ((selectedProduct?.price || 0) * quantity))
+      : 0;
+
     const newOrder: Order = {
       id: Math.random().toString(36).substr(2, 9),
       productName: selectedProduct?.name || '',
@@ -61,12 +65,12 @@ const Catalog: React.FC = () => {
       measurements,
       timestamp: Date.now(),
       customerEmail: 'customer@whatsapp.com',
-      referrerCode: ref || undefined, // Added referral code tracking
+      referrerCode: ref || undefined,
+      affiliateEarning,
       status: 'pending',
       total: (selectedProduct?.price || 0) * quantity
     };
 
-    const currentOrders = storage.getOrders();
     storage.setOrders([...currentOrders, newOrder]);
     setSelectedProduct(null);
     alert("Inquiry sent to our WhatsApp workshop! We'll reply within minutes.");
