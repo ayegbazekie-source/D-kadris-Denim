@@ -7,6 +7,7 @@ import { SiteConfig, FeaturedFit } from '../types';
 const Home: React.FC = () => {
   const [msgIndex, setMsgIndex] = useState(0);
   const [config, setConfig] = useState<SiteConfig>(storage.getSiteConfig());
+  const [affiliateStatus, setAffiliateStatus] = useState<{ verified: boolean; code: string | null }>({ verified: false, code: null });
 
   useEffect(() => {
     const updateConfig = () => {
@@ -18,6 +19,15 @@ const Home: React.FC = () => {
     const interval = setInterval(() => {
       setMsgIndex((prev) => (prev + 1) % MOTIVATIONAL_MESSAGES.length);
     }, 4000);
+
+    // --- Worker logic for affiliate verification ---
+    const currentAffiliate = storage.getCurrentAffiliate(); // Returns { verified: boolean, code: string }
+    if (currentAffiliate) {
+      setAffiliateStatus({
+        verified: currentAffiliate.verified,
+        code: currentAffiliate.verified ? currentAffiliate.code : null,
+      });
+    }
 
     return () => {
       clearInterval(interval);
@@ -72,6 +82,21 @@ const Home: React.FC = () => {
                {MOTIVATIONAL_MESSAGES[msgIndex]}
              </p>
           </div>
+
+          {/* Affiliate verification banner */}
+          {affiliateStatus.verified === false && affiliateStatus.code !== null && (
+            <div className="mt-6 bg-red-600 text-white px-6 py-3 rounded-xl font-bold text-sm">
+              Your affiliate account isn’t verified yet. Please check your email to activate referral earnings.
+            </div>
+          )}
+
+          {/* Optional: Show referral link if verified */}
+          {affiliateStatus.verified && affiliateStatus.code && (
+            <div className="mt-6 bg-green-600 text-white px-6 py-3 rounded-xl font-bold text-sm">
+              Your referral link: <input className="ml-2 px-2 py-1 rounded text-black" readOnly value={`${window.location.origin}/catalog?ref=${affiliateStatus.code}`} />
+            </div>
+          )}
+
         </div>
       </header>
 
